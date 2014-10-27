@@ -97,6 +97,11 @@ class FlxInputText extends FlxText
 	public var hasFocus(default, set):Bool = false;
 	
 	/**
+	 * Whether or not CTRL+V pasting is enabled.
+	 */
+	public var enablePasting(default, set):Bool;
+	
+	/**
 	 * The position of the selection cursor. An index of 0 means the carat is before the character at index 0.
 	 */
 	public var caretIndex(default, set):Int = 0;
@@ -169,7 +174,12 @@ class FlxInputText extends FlxText
 	/**
 	 * Stores last input text scroll. 
 	 */
-	private var lastScroll:Int; 
+	private var lastScroll:Int;
+	
+	/**
+	 * Flags whether a focus reset is needed when checking for a paste event.
+	 */
+	private var _resetFocus:Bool = false;
 	
 	/**
 	 * @param	X				The X position of the text.
@@ -223,7 +233,7 @@ class FlxInputText extends FlxText
 	override public function destroy():Void 
 	{
 		FlxG.stage.removeEventListener(KeyboardEvent.KEY_DOWN, onKeyDown);
-		
+		enablePasting = false; // Cleans up the paste events if they've been enabled.
 		backgroundSprite = FlxDestroyUtil.destroy(backgroundSprite);
 		fieldBorderSprite = FlxDestroyUtil.destroy(fieldBorderSprite);
 		callback = null;
@@ -297,6 +307,11 @@ class FlxInputText extends FlxText
 			}
 		}
 		#end
+		
+		if (enablePasting) 
+		{
+			checkForPaste();
+		}
 	}
 	
 	/**
@@ -308,8 +323,13 @@ class FlxInputText extends FlxText
 		
 		if (hasFocus) 
 		{
-			// Do nothing for Shift, Ctrl, Esc, and flixel console hotkey
-			if (key == 16 || key == 17 || key == 220 || key == 27) 
+			//
+			if (_resetFocus && FlxG.stage.focus == null)
+			{
+				_resetFocus = false;
+			}
+			// Do nothing for Shift, Ctrl, Esc, and flixel console hotkey, or if the stage is focused here.
+			if (_resetFocus || key == 16 || key == 17 || key == 220 || key == 27) 
 			{
 				return;
 			}
@@ -404,7 +424,7 @@ class FlxInputText extends FlxText
 	private function insertSubstring(Original:String, Insert:String, Index:Int):String 
 	{
 		if (Index != Original.length) 
-		{	
+		{
 			Original = Original.substring(0, Index) + (Insert) + (Original.substring(Index));
 		}
 		else 
@@ -796,6 +816,171 @@ class FlxInputText extends FlxText
 			alignStr = alignment;
 		}
 		return alignStr;
+	}
+	
+	/**
+	 * KeyUp listener when the textField is focused.
+	 */
+	private function onKeyUpFocused(e:KeyboardEvent):Void 
+	{
+		if (hasFocus)
+		{
+			if (!_resetFocus || FlxG.stage == null)
+			{
+				return;
+			}
+			
+			// Pass the key to FlxG.keys since the stage is focused on the textField.
+			FlxG.keys.getKey(e.keyCode).release();
+			
+			if (e.keyCode == 17) 
+			{
+				//Reset focus since CTRL was released.
+				resetStageFocus();
+			}
+		}
+	}
+	
+	/**
+	 * KeyDown listener when the textField is focused.
+	 */
+	private function onKeyDownFocused(e:KeyboardEvent):Void 
+	{
+		if (hasFocus) 
+		{
+			if (!_resetFocus || FlxG.stage == null)
+			{
+				return;
+			}
+			
+			// Pass the key to FlxG.keys since the stage is focused on the textField.
+			FlxG.keys.getKey(e.keyCode).press(); 
+			
+			if (e.keyCode != 17 && e.keyCode != 86)
+			{
+				//V wasn't the next key after CTRL. Reset since we're only focused for the paste shortcut.
+				resetStageFocus();
+				onKeyDown(e);
+			}
+		}
+	}
+	
+	/**
+	 * Triggered when CTRL+V is input by the user.
+	 */
+	private function onPaste(e:openfl.events.TextEvent):Void
+	{
+		#if flash
+		e.preventDefault(); // This is important so that text doesn't get pasted into the textField directly.
+		#end
+		insertText(e.text);
+		if (!FlxG.keys.pressed.CONTROL)
+		{
+			resetStageFocus();
+		}
+	}
+		
+	/**
+	 * Update loop that prepares the stage for PASTE events.
+	 */
+	private function checkForPaste():Void
+	{
+		if (hasFocus)
+		{
+			if (!_resetFocus)
+			{
+				if(FlxG.keys.pressed.CONTROL)
+				{
+					FlxG.stage.focus = textField;
+					_resetFocus = true;
+				}
+			}
+			else
+			{
+				if (!FlxG.keys.pressed.CONTROL && (!FlxG.keys.justPressed.V && FlxG.keys.justPressed.ANY))
+				{
+					resetStageFocus();
+				}
+			}
+		}
+		else if(_resetFocus)
+		{
+			resetStageFocus();
+		}
+	}
+	
+	/**
+	 * Resets FlxG.stage's focus so that events work as intended.
+	 */
+	private function resetStageFocus():Void
+	{
+		if (_resetFocus)
+		{
+			FlxG.stage.focus = null;
+			FlxG.game.onFocus(null);
+			_resetFocus = false;
+		}
+	}
+	
+	/**
+	 * Insert a String at the caretIndex.
+	 * @param	Insert
+	 */
+	public function insertText(Insert:String):Bool
+	{
+		if (text.length < maxLength || maxLength == 0)
+		{
+			if (maxLength > 0 && text.length < maxLength) 
+			{
+				Insert = Insert.substring(0, maxLength - text.length);
+			}
+			
+			var newText:String = filter(Insert);
+			
+			text = insertSubstring(text, newText, caretIndex);
+			caretIndex += newText.length;
+			
+			//Just some simple glitch-prevention.
+			if (maxLength != 0 && caretIndex > maxLength) 
+			{
+				caretIndex = maxLength;
+			}
+			else if (caretIndex < 0)
+			{
+				caretIndex = 0;
+			}
+			
+			onChange(INPUT_ACTION);
+			
+			return true;
+		}
+		return false;
+	}
+	
+	/**
+	 * Adjusts the textField type and adds/removes the appropriate events.
+	 * @param	Value
+	 * @return
+	 */
+	private function set_enablePasting(Value:Bool):Bool
+	{
+		if (Value && !enablePasting)
+		{
+			textField.addEventListener(KeyboardEvent.KEY_UP, onKeyUpFocused);
+			textField.addEventListener(KeyboardEvent.KEY_DOWN, onKeyDownFocused); // For when the textField is focused.
+			textField.addEventListener(openfl.events.TextEvent.TEXT_INPUT, onPaste); // This captures both the pasting action and typing into the textField when focused.
+			textField.type = openfl.text.TextFieldType.INPUT;
+		}
+		else if (!Value && enablePasting)
+		{
+			resetStageFocus();
+			textField.removeEventListener(KeyboardEvent.KEY_UP, onKeyUpFocused);
+			textField.removeEventListener(KeyboardEvent.KEY_DOWN, onKeyDownFocused);
+			textField.removeEventListener(openfl.events.TextEvent.TEXT_INPUT, onPaste);
+			textField.type = openfl.text.TextFieldType.DYNAMIC;
+		}
+		enablePasting = Value;
+		return enablePasting;
 	}
 	
 	private function set_caretIndex(newCaretIndex:Int):Int
